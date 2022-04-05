@@ -8,12 +8,8 @@ int main(int argc, char *argv[])
     fprintf(2, "usage: sleep time\n");
     exit(1);
   }
-  // int t = atoi(argv[1]);
-  // if (sleep(t) < 0)
-  //   exit(1);
-  // exit(0);
-  char *a = "abcdef";
-  a[2] = 0;
-  printf("%s", a);
+  int t = atoi(argv[1]);
+  if (sleep(t) < 0)
+    exit(1);
   exit(0);
 }

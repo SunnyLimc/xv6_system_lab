@@ -13,17 +13,17 @@ int main(int argc, char *argv[])
   if (fork() == 0) // child
   {
     int puid;
-    read(p[0], &puid, sizeof(int *));
+    read(p[0], &puid, sizeof(int));
     printf("%d: received ping\n", puid);
     int pid = getpid();
-    write(p[1], &pid, sizeof(int *));
+    write(p[1], &pid, sizeof(int));
   }
   else // parent
   {
     int pid = getpid();
-    write(p[1], &pid, sizeof(int *));
+    write(p[1], &pid, sizeof(int));
     int cuid;
-    read(p[0], &cuid, sizeof(int *));
+    read(p[0], &cuid, sizeof(int));
     printf("%d: received pong\n", cuid);
   }
   exit(0);
