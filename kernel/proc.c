@@ -26,20 +26,25 @@ void
 procinit(void)
 {
   struct proc *p;
-  
-  initlock(&pid_lock, "nextpid");
-  for(p = proc; p < &proc[NPROC]; p++) {
-      initlock(&p->lock, "proc");
+  char *pa[NPROC];
+  int n = 0;
 
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+  initlock(&pid_lock, "nextpid");
+  for (p = proc; p < &proc[NPROC]; p++, n++)
+  {
+    initlock(&p->lock, "proc");
+
+    // Allocate a page for the process's kernel stack.
+    // Map it high in memory, followed by an invalid
+    // guard page.
+    pa[n] = kalloc();
+    if (pa == 0)
+      panic("kalloc");
+    uint64 va = KSTACK((int)(p - proc));
+    kvmmap(va, (uint64)pa[n], PGSIZE, PTE_R | PTE_W);
+    p->kstack = va;
+
+    p->pkern = pkerncreate(va, (uint64)pa);
   }
   kvminithart();
 }
@@ -140,7 +145,7 @@ freeproc(struct proc *p)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
   if(p->pagetable)
-    proc_freepagetable(p->pagetable, p->sz);
+    proc_freepagetable(p->pagetable, p->pkern, p->sz);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -168,17 +173,19 @@ proc_pagetable(struct proc *p)
   // at the highest user virtual address.
   // only the supervisor uses it, on the way
   // to/from user space, so not PTE_U.
-  if(mappages(pagetable, TRAMPOLINE, PGSIZE,
-              (uint64)trampoline, PTE_R | PTE_X) < 0){
-    uvmfree(pagetable, 0);
+  if (mappages(pagetable, TRAMPOLINE, PGSIZE,
+               (uint64)trampoline, PTE_R | PTE_X, 0) < 0)
+  {
+    uvmfree(pagetable, 0, 0);
     return 0;
   }
 
   // map the trapframe just below TRAMPOLINE, for trampoline.S.
-  if(mappages(pagetable, TRAPFRAME, PGSIZE,
-              (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
-    uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-    uvmfree(pagetable, 0);
+  if (mappages(pagetable, TRAPFRAME, PGSIZE,
+               (uint64)(p->trapframe), PTE_R | PTE_W, 0) < 0)
+  {
+    uvmunmap(pagetable, 0, TRAMPOLINE, 1, 0);
+    uvmfree(pagetable, 0, 0);
     return 0;
   }
 
@@ -187,12 +194,11 @@ proc_pagetable(struct proc *p)
 
 // Free a process's page table, and free the
 // physical memory it refers to.
-void
-proc_freepagetable(pagetable_t pagetable, uint64 sz)
+void proc_freepagetable(pagetable_t pagetable, pagetable_t pkern, uint64 sz)
 {
-  uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-  uvmunmap(pagetable, TRAPFRAME, 1, 0);
-  uvmfree(pagetable, sz);
+  uvmunmap(pagetable, TRAMPOLINE, 1, 0, 0);
+  uvmunmap(pagetable, TRAPFRAME, 1, 0, 0);
+  uvmfree(pagetable, pkern, sz);
 }
 
 // a user program that calls exec("/init")
@@ -215,10 +221,10 @@ userinit(void)
 
   p = allocproc();
   initproc = p;
-  
+
   // allocate one user page and copy init's instructions
   // and data into it.
-  uvminit(p->pagetable, initcode, sizeof(initcode));
+  uvminit(p->pagetable, p->pkern, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
   // prepare for the very first "return" from kernel to user.
@@ -243,11 +249,12 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if ((sz = uvmalloc(p->pagetable, p->pkern, sz, sz + n)) == 0)
+    {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = uvmdealloc(p->pagetable, p->pkern, sz, sz + n);
   }
   p->sz = sz;
   return 0;
@@ -258,6 +265,8 @@ growproc(int n)
 int
 fork(void)
 {
+  if (DEBUG)
+    printf("fork start\n");
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
@@ -268,7 +277,8 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if (uvmcopy(p->pagetable, np->pagetable, np->pkern, p->sz) < 0)
+  {
     freeproc(np);
     release(&np->lock);
     return -1;
@@ -297,6 +307,8 @@ fork(void)
 
   release(&np->lock);
 
+  if (DEBUG)
+    printf("fork end\n");
   return pid;
 }
 
@@ -473,8 +485,13 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        satpswitch(p->pkern);
+        if (DEBUG)
+          printf("schedule start proc\n");
         swtch(&c->context, &p->context);
-
+        if (DEBUG)
+          printf("schedule end proc\n");
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
