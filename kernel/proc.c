@@ -26,22 +26,21 @@ void
 procinit(void)
 {
   struct proc *p;
-  char *pa[NPROC];
-  int n = 0;
+  char *pa;
 
   initlock(&pid_lock, "nextpid");
-  for (p = proc; p < &proc[NPROC]; p++, n++)
+  for (p = proc; p < &proc[NPROC]; p++)
   {
     initlock(&p->lock, "proc");
 
     // Allocate a page for the process's kernel stack.
     // Map it high in memory, followed by an invalid
     // guard page.
-    pa[n] = kalloc();
+    pa = kalloc();
     if (pa == 0)
       panic("kalloc");
     uint64 va = KSTACK((int)(p - proc));
-    kvmmap(va, (uint64)pa[n], PGSIZE, PTE_R | PTE_W);
+    kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
     p->kstack = va;
 
     p->pkern = pkerncreate(va, (uint64)pa);
@@ -486,11 +485,11 @@ scheduler(void)
         p->state = RUNNING;
         c->proc = p;
         satpswitch(p->pkern);
-        if (DEBUG)
-          printf("schedule start proc\n");
+        // if (DEBUG)
+        // printf("schedule start proc\n");
         swtch(&c->context, &p->context);
-        if (DEBUG)
-          printf("schedule end proc\n");
+        // if (DEBUG)
+        // printf("schedule end proc\n");
         kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.

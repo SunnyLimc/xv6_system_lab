@@ -120,6 +120,7 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   p->pkern = pkern;
   proc_freepagetable(oldpagetable, oldpkern, oldsz);
+  satpswitch(p->pkern);
   pkernfree(oldpkern, p->kstack);
   if (DEBUG)
     printf("exec end\n");
