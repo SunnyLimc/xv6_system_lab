@@ -157,6 +157,7 @@ sys_link(void)
   return 0;
 
 bad:
+  printf("link file bad\n");
   ilock(ip);
   ip->nlink--;
   iupdate(ip);
@@ -233,6 +234,7 @@ sys_unlink(void)
   return 0;
 
 bad:
+  printf("unlink file bad\n");
   iunlockput(dp);
   end_op();
   return -1;
@@ -435,7 +437,7 @@ sys_exec(void)
       break;
     }
     argv[i] = kalloc();
-    if(argv[i] == 0)
+    if (argv[i] == 0)
       goto bad;
     if(fetchstr(uarg, argv[i], PGSIZE) < 0)
       goto bad;
@@ -449,9 +451,9 @@ sys_exec(void)
   return ret;
 
  bad:
-  for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
-    kfree(argv[i]);
-  return -1;
+   for (i = 0; i < NELEM(argv) && argv[i] != 0; i++)
+     kfree(argv[i]);
+   return -1;
 }
 
 uint64

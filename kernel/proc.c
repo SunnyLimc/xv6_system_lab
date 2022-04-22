@@ -145,6 +145,7 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->pkern, p->sz);
+  pkernfreewalk(p->pkern);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -264,14 +265,13 @@ growproc(int n)
 int
 fork(void)
 {
-  if (DEBUG)
-    printf("fork start\n");
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
 
   // Allocate process.
-  if((np = allocproc()) == 0){
+  if ((np = allocproc()) == 0)
+  {
     return -1;
   }
 
@@ -293,8 +293,8 @@ fork(void)
   np->trapframe->a0 = 0;
 
   // increment reference counts on open file descriptors.
-  for(i = 0; i < NOFILE; i++)
-    if(p->ofile[i])
+  for (i = 0; i < NOFILE; i++)
+    if (p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
@@ -306,8 +306,6 @@ fork(void)
 
   release(&np->lock);
 
-  if (DEBUG)
-    printf("fork end\n");
   return pid;
 }
 
@@ -485,11 +483,7 @@ scheduler(void)
         p->state = RUNNING;
         c->proc = p;
         satpswitch(p->pkern);
-        // if (DEBUG)
-        // printf("schedule start proc\n");
         swtch(&c->context, &p->context);
-        // if (DEBUG)
-        // printf("schedule end proc\n");
         kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.

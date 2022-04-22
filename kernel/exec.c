@@ -12,11 +12,9 @@ static int loadseg(pde_t *pgdir, uint64 addr, struct inode *ip, uint offset, uin
 int
 exec(char *path, char **argv)
 {
-  if (DEBUG)
-    printf("exec\n");
   char *s, *last;
   int i, off;
-  uint64 argc, sz = 0, sp, ustack[MAXARG+1], stackbase;
+  uint64 argc, sz = 0, sp, ustack[MAXARG + 1], stackbase;
   struct elfhdr elf;
   struct inode *ip;
   struct proghdr ph;
@@ -26,38 +24,40 @@ exec(char *path, char **argv)
 
   begin_op();
 
-  if((ip = namei(path)) == 0){
+  if ((ip = namei(path)) == 0)
+  {
     end_op();
     return -1;
   }
   ilock(ip);
 
   // Check ELF header
-  if(readi(ip, 0, (uint64)&elf, 0, sizeof(elf)) != sizeof(elf))
+  if (readi(ip, 0, (uint64)&elf, 0, sizeof(elf)) != sizeof(elf))
     goto bad;
-  if(elf.magic != ELF_MAGIC)
+  if (elf.magic != ELF_MAGIC)
     goto bad;
 
-  if((pagetable = proc_pagetable(p)) == 0)
+  if ((pagetable = proc_pagetable(p)) == 0)
     goto bad;
 
   // Load program into memory.
-  for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
-    if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
+  for (i = 0, off = elf.phoff; i < elf.phnum; i++, off += sizeof(ph))
+  {
+    if (readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
       goto bad;
-    if(ph.type != ELF_PROG_LOAD)
+    if (ph.type != ELF_PROG_LOAD)
       continue;
-    if(ph.memsz < ph.filesz)
+    if (ph.memsz < ph.filesz)
       goto bad;
-    if(ph.vaddr + ph.memsz < ph.vaddr)
+    if (ph.vaddr + ph.memsz < ph.vaddr)
       goto bad;
     uint64 sz1;
     if ((sz1 = uvmalloc(pagetable, pkern, sz, ph.vaddr + ph.memsz)) == 0)
       goto bad;
     sz = sz1;
-    if(ph.vaddr % PGSIZE != 0)
+    if (ph.vaddr % PGSIZE != 0)
       goto bad;
-    if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
+    if (loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
       goto bad;
   }
   iunlockput(ip);
@@ -74,30 +74,30 @@ exec(char *path, char **argv)
   if ((sz1 = uvmalloc(pagetable, pkern, sz, sz + 2 * PGSIZE)) == 0)
     goto bad;
   sz = sz1;
-  uvmclear(pagetable, sz-2*PGSIZE);
+  uvmclear(pagetable, sz - 2 * PGSIZE);
   sp = sz;
   stackbase = sp - PGSIZE;
-
   // Push argument strings, prepare rest of stack in ustack.
-  for(argc = 0; argv[argc]; argc++) {
-    if(argc >= MAXARG)
+  for (argc = 0; argv[argc]; argc++)
+  {
+    if (argc >= MAXARG)
       goto bad;
     sp -= strlen(argv[argc]) + 1;
     sp -= sp % 16; // riscv sp must be 16-byte aligned
-    if(sp < stackbase)
+    if (sp < stackbase)
       goto bad;
-    if(copyout(pagetable, sp, argv[argc], strlen(argv[argc]) + 1) < 0)
+    if (copyout(pagetable, sp, argv[argc], strlen(argv[argc]) + 1) < 0)
       goto bad;
     ustack[argc] = sp;
   }
   ustack[argc] = 0;
 
   // push the array of argv[] pointers.
-  sp -= (argc+1) * sizeof(uint64);
+  sp -= (argc + 1) * sizeof(uint64);
   sp -= sp % 16;
-  if(sp < stackbase)
+  if (sp < stackbase)
     goto bad;
-  if(copyout(pagetable, sp, (char *)ustack, (argc+1)*sizeof(uint64)) < 0)
+  if (copyout(pagetable, sp, (char *)ustack, (argc + 1) * sizeof(uint64)) < 0)
     goto bad;
 
   // arguments to user main(argc, argv)
@@ -106,9 +106,9 @@ exec(char *path, char **argv)
   p->trapframe->a1 = sp;
 
   // Save program name for debugging.
-  for(last=s=path; *s; s++)
-    if(*s == '/')
-      last = s+1;
+  for (last = s = path; *s; s++)
+    if (*s == '/')
+      last = s + 1;
   safestrcpy(p->name, last, sizeof(p->name));
 
   // Commit to the user image.
@@ -116,18 +116,17 @@ exec(char *path, char **argv)
   oldpkern = p->pkern;
   p->pagetable = pagetable;
   p->sz = sz;
-  p->trapframe->epc = elf.entry;  // initial program counter = main
-  p->trapframe->sp = sp; // initial stack pointer
+  p->trapframe->epc = elf.entry; // initial program counter = main
+  p->trapframe->sp = sp;         // initial stack pointer
   p->pkern = pkern;
   proc_freepagetable(oldpagetable, oldpkern, oldsz);
   satpswitch(p->pkern);
   pkernfree(oldpkern, p->kstack);
-  if (DEBUG)
-    printf("exec end\n");
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
+   printf("exec bad\n");
    if (pagetable)
      proc_freepagetable(pagetable, pkern, sz);
    pkernfree(pkern, p->kstack);

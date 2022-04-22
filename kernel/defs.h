@@ -166,6 +166,7 @@ void vmprint(pagetable_t);
 void pkvmmap(pagetable_t, uint64, uint64, uint64, int);
 pagetable_t pkerncreate(uint64, uint64);
 void pkernfree(pagetable_t, uint64);
+void pkernfreewalk(pagetable_t);
 void satpswitch(pagetable_t);
 int mappages(pagetable_t, uint64, uint64, uint64, int, pagetable_t);
 pagetable_t     uvmcreate(void);

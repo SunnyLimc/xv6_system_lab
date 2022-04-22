@@ -23,6 +23,8 @@ struct {
   struct run *freelist;
 } kmem;
 
+int fr = 0;
+
 void
 kinit()
 {
@@ -37,6 +39,7 @@ freerange(void *pa_start, void *pa_end)
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
+  fr = 1;
 }
 
 // Free the page of physical memory pointed at by v,
@@ -55,6 +58,9 @@ kfree(void *pa)
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
+
+  if (fr && DEBUG)
+    printf("kfree(): %p\n", r);
 
   acquire(&kmem.lock);
   r->next = kmem.freelist;

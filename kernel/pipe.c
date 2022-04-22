@@ -46,13 +46,14 @@ pipealloc(struct file **f0, struct file **f1)
   return 0;
 
  bad:
-  if(pi)
-    kfree((char*)pi);
-  if(*f0)
-    fileclose(*f0);
-  if(*f1)
-    fileclose(*f1);
-  return -1;
+   printf("pipe bad\n");
+   if (pi)
+     kfree((char *)pi);
+   if (*f0)
+     fileclose(*f0);
+   if (*f1)
+     fileclose(*f1);
+   return -1;
 }
 
 void
