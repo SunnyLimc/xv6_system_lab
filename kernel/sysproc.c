@@ -47,7 +47,10 @@ sys_sbrk(void)
   if(argint(0, &n) < 0)
     return -1;
   addr = myproc()->sz;
-  if(growproc(n) < 0)
+  // limit user pagetable to keep under PLIC
+  // if (PGROUNDUP(addr + n) >= PLIC)
+  // return -1;
+  if (growproc(n) < 0)
     return -1;
   return addr;
 }

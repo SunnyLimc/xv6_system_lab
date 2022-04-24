@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -131,8 +133,8 @@ kvmpa(uint64 va)
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
-  
-  pte = walk(kernel_pagetable, va, 0);
+
+  pte = walk(myproc()->pktbl, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -379,23 +381,25 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
+  return copyin_new(pagetable, dst, srcva, len);
 
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+  // uint64 n, va0, pa0;
 
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  // while(len > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > len)
+  //     n = len;
+  //   memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+
+  //   len -= n;
+  //   dst += n;
+  //   srcva = va0 + PGSIZE;
+  // }
+  // return 0;
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -405,38 +409,116 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  return copyinstr_new(pagetable, dst, srcva, max);
+  // uint64 n, va0, pa0;
+  // int got_null = 0;
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
+  // while(got_null == 0 && max > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > max)
+  //     n = max;
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
+  //   char *p = (char *) (pa0 + (srcva - va0));
+  //   while(n > 0){
+  //     if(*p == '\0'){
+  //       *dst = '\0';
+  //       got_null = 1;
+  //       break;
+  //     } else {
+  //       *dst = *p;
+  //     }
+  //     --n;
+  //     --max;
+  //     p++;
+  //     dst++;
+  //   }
+
+  //   srcva = va0 + PGSIZE;
+  // }
+  // if(got_null){
+  //   return 0;
+  // } else {
+  //   return -1;
+  // }
+}
+
+void pktblmap(pagetable_t pgt, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if (mappages(pgt, va, sz, pa, perm) < 0)
+    panic("pktbl: mappage");
+}
+
+pagetable_t pktblinit()
+{
+  // for more details see vm.c:kvminit()
+  pagetable_t pgt = (pagetable_t)kalloc();
+  memset(pgt, 0, PGSIZE);
+  pktblmap(pgt, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  pktblmap(pgt, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  // CLINT Virtual Address is under PLIC and the mapping is  ignored
+  pktblmap(pgt, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  pktblmap(pgt, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  pktblmap(pgt, KERNBASE, KERNBASE, (uint64)etext - KERNBASE, PTE_R | PTE_X);
+  pktblmap(pgt, (uint64)etext, (uint64)etext, PHYSTOP - (uint64)etext, PTE_R | PTE_W);
+  pktblmap(pgt, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  return pgt;
+}
+
+// the core concept is the range preserve for memory is permanent
+// each pagetable can store 4096 entries
+// each entires can refer to a true physical memory
+// riscv39 use 27 bits to find out the physical memory
+// it used each 9 bit to indicate a pte of a pagetable
+// because of the chunk size of riscv is 4096 bytes
+// and a pointer for x64 is 8byte, pagetable is uint64, that means 512 uint64 pointers need consume 4096bytes
+// with splitting memory into small pieces, we can use memory without allocate whole physical memory at one time
+// and with using virtual memory solution, we can do permission management more effciency
+// we split 27 bits into 3 levels, so that we can use a suitable (the same size as the memory chunk) pagetable to store physical memory
+// it can produce nearly 512^3 * 4096 bytes as the maximum memory
+// with a correct pagetable used, the hardware can automatically translate va to pa, or generate a new va
+// it preserve sufficient dingling for physical memory (from 0x80000000 to +128*1024*1024) (just a placeholder to indicate uniqueness)
+//! WHY? because of you preserve enough dingling, you can get a unique memory address quickly by shifting it.
+void pktblsync(pagetable_t pktbl, pagetable_t pagetable, uint64 sz)
+{
+  // that means I just need to copy the first level, and the rest will be correctly calculated
+  //! If you know the growth way of the pagetable, you can achieve this goal with simplify p->sz
+  for (uint64 a = 0; a < sz; a += PGSIZE)
+  {
+    pte_t *pte = walk(pagetable, a, 0);
+    pte_t *pkpte = walk(pktbl, a, 1);
+    if (pte == 0)
+      panic("pktblsync");
+    if (pkpte == 0)
+      panic("pktblsync");
+    uint64 pa = PTE2PA(*pte);
+    uint64 flag = (PTE_FLAGS(*pte)) & (~PTE_U);
+    *pkpte = PA2PTE(pa) | flag;
+  }
+}
+
+void pktblfree(pagetable_t pktbl)
+{
+  for (int i = 0; i < 512; i++)
+  {
+    pte_t pte = pktbl[i];
+    // physical memory is 2bit left than pte, so the states of PTE is protected
+    // the walk() allocated pte only have the flag of PTE_V
+    if (pte & PTE_V)
+    {
+      pktbl[i] = 0;
+      if ((pte & (PTE_X | PTE_W | PTE_R)) == 0)
+        pktblfree((pagetable_t)PTE2PA(pte));
     }
+  }
+  kfree((void *)pktbl);
+}
 
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+void pktblhart(pagetable_t pgt)
+{
+  w_satp(MAKE_SATP(pgt));
+  sfence_vma();
 }
