@@ -132,3 +132,29 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
+void backtrace(void)
+{
+  // xv6 allocate each process a page for stacking
+  // only the return address you can get record the entry address of assembly
+
+  // use pointer as type for getting the real value from memory
+
+  // s0 is the stack pointer of current stack frame
+  uint64 *s0 = (uint64 *)r_fp();
+  // stack is growing from a higher memory address to the lower
+  // the s0 is located at the lowest address of current available memory
+  uint64 high_bound = PGROUNDUP((uint64)s0);
+  uint64 low_bound = PGROUNDDOWN((uint64)s0);
+  // (s0 - 1) is the same as (s0 - 8) for (uint64 *) is 8 bytes
+
+  // range of current stack virtual memory
+  // deny using the very first function of stack
+  while ((uint64)s0 >= low_bound && (uint64)s0 < high_bound)
+  {
+    uint64 *ret = (uint64 *)*(s0 - 1);
+    printf("%p\n", ret);
+    // get the saved s0 from memory
+    s0 = (uint64 *)*(s0 - 2);
+  }
+}
