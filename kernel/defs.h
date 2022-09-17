@@ -86,6 +86,7 @@ void            panic(char*) __attribute__((noreturn));
 void            printfinit(void);
 
 // proc.c
+int kpstack_h(pagetable_t, int);
 int             cpuid(void);
 void            exit(int);
 int             fork(void);
@@ -158,7 +159,10 @@ void            uartputc_sync(int);
 int             uartgetc(void);
 
 // vm.c
+pagetable_t acquire_globalkpgt(void);
 void            kvminit(void);
+int kpg_h(pagetable_t, int);
+int kpgmap(pagetable_t, uint64, uint64, uint64, uint64);
 void            kvminithart(void);
 uint64          kvmpa(uint64);
 void            kvmmap(uint64, uint64, uint64, int);
@@ -171,6 +175,7 @@ uint64          uvmdealloc(pagetable_t, uint64, uint64);
 #else
 int             uvmcopy(pagetable_t, pagetable_t, uint64);
 #endif
+void freewalk(pagetable_t);
 void            uvmfree(pagetable_t, uint64);
 void            uvmunmap(pagetable_t, uint64, uint64, int);
 void            uvmclear(pagetable_t, uint64);

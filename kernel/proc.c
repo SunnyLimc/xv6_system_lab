@@ -21,26 +21,59 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
-// initialize the proc table at boot time.
-void
-procinit(void)
-{
+// if alloc is not set, use kvmpa() to reverse lookup the physical address
+// if unmap is set, no matters what errhandles is set to
+int kpstack_h(pagetable_t pg, int unmap) {
+  pagetable_t pgt = pg;
+  if (pg == 0) pg = acquire_globalkpgt();
   struct proc *p;
-  
-  initlock(&pid_lock, "nextpid");
-  for(p = proc; p < &proc[NPROC]; p++) {
-      initlock(&p->lock, "proc");
-
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+  const int mc = NPROC;
+  int umc = mc;
+  if (!unmap) {
+    for (p = proc, umc = 0; p < &proc[NPROC]; p++, umc++) {
+      uint64 pa;
+      uint64 va;
+      if (pgt == 0) {
+        // init
+        initlock(&p->lock, "proc");
+        // Allocate a page for the process's kernel stack.
+        // Map it high in memory, followed by an invalid
+        // guard page.
+        pa = (uint64)kalloc();
+        if (pa == 0) panic("kalloc");
+        va = KSTACK((int)(p - proc));
+      } else {
+        // allocated
+        va = p->kstack;
+        pa = kvmpa(va);
+      }
+      // EASY to cause a memory leak if it's not correctly unmapping
+      if (kpgmap(pgt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W) != 0) {
+        unmap = 1;
+        break;
+      }
+      if (pgt == 0) p->kstack = va;
+    }
   }
+  // it's nonsense cause you can do it with unmapfreewalk()
+  if (unmap) {
+    for (p = proc; p < &proc[umc]; p++) {
+      uint64 va;
+      if (pgt == 0)
+        va = KSTACK((int)(p - proc));
+      else
+        va = p->kstack;
+      uvmunmap(pg, va, PGSIZE, 0);
+    }
+    if (umc != mc) return -1;
+  }
+  return 0;
+}
+
+// initialize the proc table at boot time.
+void procinit(void) {
+  initlock(&pid_lock, "nextpid");
+  kpstack_h(0, 0);
   kvminithart();
 }
 
@@ -121,6 +154,27 @@ found:
     return 0;
   }
 
+  if ((p->k_pagetable = (pagetable_t)kalloc()) == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  if (kpg_h(p->k_pagetable, 0) != 0) {
+    freewalk(p->k_pagetable);
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  if (kpstack_h(p->k_pagetable, 0) != 0) {
+    kpg_h(p->k_pagetable, 1);  // actually 1 stands for "free"
+    freewalk(p->k_pagetable);
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -194,6 +248,8 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
 }
+
+void proc_freekpg(pagetable_t pg) {}
 
 // a user program that calls exec("/init")
 // od -t xC initcode

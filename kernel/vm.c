@@ -15,36 +15,87 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+pagetable_t acquire_globalkpgt() { return kernel_pagetable; }
+
 /*
  * create a direct-map page table for the kernel.
  */
 void
 kvminit()
 {
-  kernel_pagetable = (pagetable_t) kalloc();
-  memset(kernel_pagetable, 0, PGSIZE);
+  kernel_pagetable = (pagetable_t)kalloc();
+  kpg_h(0, 0);
+}
 
-  // uart registers
-  kvmmap(UART0, UART0, PGSIZE, PTE_R | PTE_W);
+// if pg == 0, stands for global kernel pagetable
+int kpg_h(pagetable_t pg, int unmap) {
+  // use pgt for condition judging
+  pagetable_t pgt = pg;
+  if (pg == 0) pg = kernel_pagetable;
+  const uint64 va[] = {
+      // uart registers
+      UART0,
+      // virtio mmio disk interface
+      VIRTIO0,
+      // CLINT
+      CLINT,
+      // PLIC
+      PLIC,
+      // map kernel text executable and read-only.
+      KERNBASE,
+      // map kernel data and the physical RAM we'll make use of.
+      (uint64)etext,
+      // map the trampoline for trap entry/exit to
+      // the highest virtual address in the kernel.
+      TRAMPOLINE};
+  const int mc = sizeof(va) / sizeof(uint64);
+  int umc = mc;
+  const uint64 sz[] = {PGSIZE,
+                       PGSIZE,
+                       0x10000,
+                       0x400000,
+                       (uint64)etext - KERNBASE,
+                       PHYSTOP - (uint64)etext,
+                       PGSIZE};
+  // mapping
+  if (!unmap) {
+    memset(pg, 0, PGSIZE);
+    const uint64 pa[] = {
+        UART0,         VIRTIO0,           CLINT, PLIC, KERNBASE,
+        (uint64)etext, (uint64)trampoline};
+    const uint64 perm[] = {PTE_R | PTE_W, PTE_R | PTE_W, PTE_R | PTE_W,
+                           PTE_R | PTE_W, PTE_R | PTE_X, PTE_R | PTE_W,
+                           PTE_R | PTE_X};
+    for (umc = 0; umc < mc; umc++) {
+      if (kpgmap(pgt, va[umc], pa[umc], sz[umc], perm[umc]) != 0) {
+        // lack of sufficient memory for current process
+        unmap = 1;
+        //! it's significant to add a break(), ok?
+        break;
+      }
+    }
+  }
+  // it's nonsense cause you can do it with unmapfreewalk()
+  if (unmap) {
+    for (int i = 0; i < umc; i++) {
+      // good type checking for (int)
+      uint64 pgs = PGROUNDUP((int)sz[i]) / PGSIZE;
+      uvmunmap(pg, va[i], pgs, 0);
+    }
+    if (umc != mc) return -1;
+  }
+  return 0;
+}
 
-  // virtio mmio disk interface
-  kvmmap(VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-
-  // CLINT
-  kvmmap(CLINT, CLINT, 0x10000, PTE_R | PTE_W);
-
-  // PLIC
-  kvmmap(PLIC, PLIC, 0x400000, PTE_R | PTE_W);
-
-  // map kernel text executable and read-only.
-  kvmmap(KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
-
-  // map kernel data and the physical RAM we'll make use of.
-  kvmmap((uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
-
-  // map the trampoline for trap entry/exit to
-  // the highest virtual address in the kernel.
-  kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+int kpgmap(pagetable_t pg, uint64 va, uint64 pa, uint64 sz, uint64 perm) {
+  printf("%p %p %p %d %d\n", pg, va, pa, sz, perm);
+  if (pg == 0) {
+    kvmmap(va, pa, sz, perm);
+  } else {
+    return mappages(pg, va, sz, pa, perm);
+  }
+  // everything is ok
+  return 0;
 }
 
 // Switch h/w page table register to the kernel's page table,
@@ -159,6 +210,8 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     if(*pte & PTE_V)
       panic("remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
+    // map -> judge -> break
+    // PGROUNDDOWN is feasible
     if(a == last)
       break;
     a += PGSIZE;
@@ -268,6 +321,24 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 
   return newsz;
 }
+
+void _unmapfreewalk(pagetable_t pg, int level) {
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pg[i];
+    if (pte & PTE_V) {
+      if (level > 0) {
+        pagetable_t pa = PTE2PA(pte);
+        _unmapfreewalk(pa, level - 1);
+        kfree((void *)pa);
+      }
+      pg[i] = 0;
+    }
+  }
+}
+
+// unmap valid pages (but without freeing it) from last level
+// and do freewalk for first two level
+void unmapfreewalk(pagetable_t pg) { _unmapfreewalk(pg, 2); }
 
 // Recursively free page-table pages.
 // All leaf mappings must already have been removed.
