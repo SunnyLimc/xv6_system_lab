@@ -23,49 +23,30 @@ extern char trampoline[]; // trampoline.S
 
 // if alloc is not set, use kvmpa() to reverse lookup the physical address
 // if unmap is set, no matters what errhandles is set to
-int kpstack_h(pagetable_t pg, int unmap) {
+int kpstackinit(pagetable_t pg) {
   pagetable_t pgt = pg;
   if (pg == 0) pg = acquire_globalkpgt();
   struct proc *p;
-  const int mc = NPROC;
-  int umc = mc;
-  if (!unmap) {
-    for (p = proc, umc = 0; p < &proc[NPROC]; p++, umc++) {
-      uint64 pa;
-      uint64 va;
-      if (pgt == 0) {
-        // init
-        initlock(&p->lock, "proc");
-        // Allocate a page for the process's kernel stack.
-        // Map it high in memory, followed by an invalid
-        // guard page.
-        pa = (uint64)kalloc();
-        if (pa == 0) panic("kalloc");
-        va = KSTACK((int)(p - proc));
-      } else {
-        // allocated
-        va = p->kstack;
-        pa = kvmpa(va);
-      }
-      // EASY to cause a memory leak if it's not correctly unmapping
-      if (kpgmap(pgt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W) != 0) {
-        unmap = 1;
-        break;
-      }
-      if (pgt == 0) p->kstack = va;
+  for (p = proc; p < &proc[NPROC]; p++) {
+    uint64 pa;
+    uint64 va;
+    if (pgt == 0) {
+      // init
+      initlock(&p->lock, "proc");
+      // Allocate a page for the process's kernel stack.
+      // Map it high in memory, followed by an invalid
+      // guard page.
+      pa = (uint64)kalloc();
+      if (pa == 0) panic("kalloc");
+      va = KSTACK((int)(p - proc));
+    } else {
+      // allocated
+      va = p->kstack;
+      pa = kvmpa(va);
     }
-  }
-  // it's nonsense cause you can do it with unmapfreewalk()
-  if (unmap) {
-    for (p = proc; p < &proc[umc]; p++) {
-      uint64 va;
-      if (pgt == 0)
-        va = KSTACK((int)(p - proc));
-      else
-        va = p->kstack;
-      uvmunmap(pg, va, PGSIZE, 0);
-    }
-    if (umc != mc) return -1;
+    // EASY to cause a memory leak if it's not correctly unmapping
+    if (kpgmap(pgt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W) != 0) return -1;
+    if (pgt == 0) p->kstack = va;
   }
   return 0;
 }
@@ -73,7 +54,7 @@ int kpstack_h(pagetable_t pg, int unmap) {
 // initialize the proc table at boot time.
 void procinit(void) {
   initlock(&pid_lock, "nextpid");
-  kpstack_h(0, 0);
+  kpstackinit(0);
   kvminithart();
 }
 
@@ -160,16 +141,15 @@ found:
     return 0;
   }
 
-  if (kpg_h(p->k_pagetable, 0) != 0) {
-    freewalk(p->k_pagetable);
+  if (kpginit(p->k_pagetable) != 0) {
+    unmapfreewalk(p->k_pagetable);
     freeproc(p);
     release(&p->lock);
     return 0;
   }
 
-  if (kpstack_h(p->k_pagetable, 0) != 0) {
-    kpg_h(p->k_pagetable, 1);  // actually 1 stands for "free"
-    freewalk(p->k_pagetable);
+  if (kpstackinit(p->k_pagetable) != 0) {
+    unmapfreewalk(p->k_pagetable);
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -195,7 +175,9 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if (p->k_pagetable) unmapfreewalk(p->k_pagetable);
   p->pagetable = 0;
+  p->k_pagetable = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
