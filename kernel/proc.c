@@ -510,9 +510,13 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+        w_satp(MAKE_SATP(p->k_pagetable));
+        sfence_vma();
+
         c->proc = p;
         swtch(&c->context, &p->context);
 
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
