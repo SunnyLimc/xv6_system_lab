@@ -86,6 +86,7 @@ void            panic(char*) __attribute__((noreturn));
 void            printfinit(void);
 
 // proc.c
+pagetable_t proc_kernptable(void);
 int kpstackinit(pagetable_t);
 int             cpuid(void);
 void            exit(int);
@@ -163,17 +164,18 @@ pagetable_t acquire_globalkpgt(void);
 void            kvminit(void);
 int kpginit(pagetable_t);
 int kpgmap(pagetable_t, uint64, uint64, uint64, uint64);
+void kvmhart(pagetable_t);
 void            kvminithart(void);
 uint64          kvmpa(uint64);
 void            kvmmap(uint64, uint64, uint64, int);
 int             mappages(pagetable_t, uint64, uint64, uint64, int);
 pagetable_t     uvmcreate(void);
 void            uvminit(pagetable_t, uchar *, uint);
-uint64          uvmalloc(pagetable_t, uint64, uint64);
-uint64          uvmdealloc(pagetable_t, uint64, uint64);
+uint64 uvmalloc(pagetable_t, pagetable_t, uint64, uint64);
+uint64 uvmdealloc(pagetable_t, pagetable_t, uint64, uint64);
 #ifdef SOL_COW
 #else
-int             uvmcopy(pagetable_t, pagetable_t, uint64);
+int uvmcopy(pagetable_t, pagetable_t, pagetable_t, uint64);
 #endif
 void unmapfreewalk(pagetable_t);
 void freewalk(pagetable_t);

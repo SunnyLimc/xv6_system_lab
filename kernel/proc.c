@@ -21,6 +21,16 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+pagetable_t proc_kernptable() {
+  pagetable_t pg = 0;
+  if ((pg = (pagetable_t)kalloc()) == 0) return 0;
+  if (kpginit(pg) != 0 || kpstackinit(pg) != 0) {
+    unmapfreewalk(pg);
+    return 0;
+  }
+  return pg;
+}
+
 // if alloc is not set, use kvmpa() to reverse lookup the physical address
 // if unmap is set, no matters what errhandles is set to
 int kpstackinit(pagetable_t pg) {
@@ -135,21 +145,7 @@ found:
     return 0;
   }
 
-  if ((p->k_pagetable = (pagetable_t)kalloc()) == 0) {
-    freeproc(p);
-    release(&p->lock);
-    return 0;
-  }
-
-  if (kpginit(p->k_pagetable) != 0) {
-    unmapfreewalk(p->k_pagetable);
-    freeproc(p);
-    release(&p->lock);
-    return 0;
-  }
-
-  if (kpstackinit(p->k_pagetable) != 0) {
-    unmapfreewalk(p->k_pagetable);
+  if ((p->k_pagetable = proc_kernptable()) == 0) {
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -231,8 +227,6 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmfree(pagetable, sz);
 }
 
-void proc_freekpg(pagetable_t pg) {}
-
 // a user program that calls exec("/init")
 // od -t xC initcode
 uchar initcode[] = {
@@ -281,11 +275,11 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if ((sz = uvmalloc(p->pagetable, p->k_pagetable, sz, sz + n)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = uvmdealloc(p->pagetable, p->k_pagetable, sz, sz + n);
   }
   p->sz = sz;
   return 0;
@@ -306,7 +300,7 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if (uvmcopy(p->pagetable, np->pagetable, np->k_pagetable, p->sz) < 0) {
     freeproc(np);
     release(&np->lock);
     return -1;
@@ -510,8 +504,7 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
-        w_satp(MAKE_SATP(p->k_pagetable));
-        sfence_vma();
+        kvmhart(p->k_pagetable);
 
         c->proc = p;
         swtch(&c->context, &p->context);

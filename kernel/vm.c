@@ -78,6 +78,11 @@ int kpgmap(pagetable_t pg, uint64 va, uint64 pa, uint64 sz, uint64 perm) {
   return 0;
 }
 
+void kvmhart(pagetable_t pg) {
+  w_satp(MAKE_SATP(pg));
+  sfence_vma();
+}
+
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
 void
@@ -182,13 +187,16 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   uint64 a, last;
   pte_t *pte;
 
+  if (va > 0x1990000L) printf("%p %p\n", pagetable, va);
   a = PGROUNDDOWN(va);
   last = PGROUNDDOWN(va + size - 1);
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
-    if(*pte & PTE_V)
+    if (*pte & PTE_V) {
+      printf("fatal: %p %p\n", pagetable, va);
       panic("remap");
+    }
     *pte = PA2PTE(pa) | perm | PTE_V;
     // map -> judge -> break
     // PGROUNDDOWN is feasible
@@ -198,6 +206,33 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     pa += PGSIZE;
   }
   return 0;
+}
+
+int union_mappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
+                  uint64 size, uint64 pa, int perm) {
+  if (mappages(user_pg, va, size, pa, perm) != 0) return -1;
+  //! watch out bugs
+  // avoid "remap" panic, deny mapping VA higher than PLIC (0x0C000000)
+  if (va < PLIC) {
+    if (va + size - 1 >= PLIC) {
+      size = PLIC - va;
+      printf("not map");
+    };
+    if (mappages(kern_pg, va, size, pa, perm & (!PTE_U)) != 0) {
+      uvmunmap(user_pg, va, size / PGSIZE, 0);
+      return -1;
+    }
+  }
+  return 0;
+}
+
+void union_unmappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
+                     uint64 npages, int do_free) {
+  uvmunmap(user_pg, va, npages, do_free);
+  if (va < PLIC) {
+    if (va + npages * PGSIZE - 1 >= PLIC) npages = (PLIC - va) / PGSIZE;
+    uvmunmap(kern_pg, va, npages, 0);
+  };
 }
 
 // Remove npages of mappings starting from va. va must be
@@ -258,9 +293,8 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
 
 // Allocate PTEs and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
-uint64
-uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
-{
+uint64 uvmalloc(pagetable_t user_pg, pagetable_t kern_pg, uint64 oldsz,
+                uint64 newsz) {
   char *mem;
   uint64 a;
 
@@ -271,13 +305,14 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   for(a = oldsz; a < newsz; a += PGSIZE){
     mem = kalloc();
     if(mem == 0){
-      uvmdealloc(pagetable, a, oldsz);
+      uvmdealloc(user_pg, kern_pg, a, oldsz);
       return 0;
     }
     memset(mem, 0, PGSIZE);
-    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+    if (union_mappage(user_pg, kern_pg, a, PGSIZE, (uint64)mem,
+                      PTE_W | PTE_X | PTE_R | PTE_U) != 0) {
       kfree(mem);
-      uvmdealloc(pagetable, a, oldsz);
+      uvmdealloc(user_pg, kern_pg, a, oldsz);
       return 0;
     }
   }
@@ -288,15 +323,14 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 // newsz.  oldsz and newsz need not be page-aligned, nor does newsz
 // need to be less than oldsz.  oldsz can be larger than the actual
 // process size.  Returns the new process size.
-uint64
-uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
-{
+uint64 uvmdealloc(pagetable_t user_pg, pagetable_t kern_pg, uint64 oldsz,
+                  uint64 newsz) {
   if(newsz >= oldsz)
     return oldsz;
 
   if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
-    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+    union_unmappage(user_pg, kern_pg, PGROUNDDOWN(newsz), npages, 1);
   }
 
   return newsz;
@@ -359,9 +393,8 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
-int
-uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
-{
+int uvmcopy(pagetable_t old, pagetable_t new_user, pagetable_t new_kern,
+            uint64 sz) {
   pte_t *pte;
   uint64 pa, i;
   uint flags;
@@ -377,7 +410,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((mem = kalloc()) == 0)
       goto err;
     memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    if (union_mappage(new_user, new_kern, i, PGSIZE, (uint64)mem, flags) != 0) {
       kfree(mem);
       goto err;
     }
@@ -385,9 +418,9 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
-}
+   union_unmappage(new_user, new_kern, 0, i / PGSIZE, 1);
+   return -1;
+ }
 
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
