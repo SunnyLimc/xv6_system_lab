@@ -344,7 +344,7 @@ uint64 uvmdealloc(pagetable_t user_pg, pagetable_t kern_pg, uint64 oldsz,
 
   if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
-    union_unmappage(user_pg, kern_pg, PGROUNDDOWN(newsz), npages, 1);
+    union_unmappage(user_pg, kern_pg, PGROUNDUP(newsz), npages, 1);
   }
 
   return newsz;
