@@ -63,8 +63,13 @@ int kpginit(pagetable_t pg) {
   const uint64 perm[] = {PTE_R | PTE_W, PTE_R | PTE_W, PTE_R | PTE_W,
                          PTE_R | PTE_W, PTE_R | PTE_X, PTE_R | PTE_W,
                          PTE_R | PTE_X};
-  for (int i = 0; i < count; i++)
+  for (int i = 0; i < count; i++) {
+    //! do not map CLINT for per-process_kernel_pagetable to avoid interfering
+    //! the lab
+    // only map it for global_kernel_pagetable
+    if (pgt != 0 && va[i] == CLINT) continue;
     if (kpgmap(pgt, va[i], pa[i], sz[i], perm[i]) != 0) return -1;
+  }
   return 0;
 }
 
@@ -177,6 +182,12 @@ kvmpa(uint64 va)
   return pa+off;
 }
 
+int ldebug = 1;
+int vaon = 0;
+uint64 lva = 0;
+int lpgon = 1;
+pagetable_t lpg = (pagetable_t)0x83fe4000L;
+
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
 // be page-aligned. Returns 0 on success, -1 if walk() couldn't
@@ -187,21 +198,17 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   uint64 a, last;
   pte_t *pte;
 
-  if (va > 0x1990000L) printf("%p %p\n", pagetable, va);
+  if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || pagetable == lpg))
+    printf("    %p, va: %p, s: %d, p: %d\n", pagetable, va, size, perm);
   a = PGROUNDDOWN(va);
   last = PGROUNDDOWN(va + size - 1);
-  for(;;){
-    if((pte = walk(pagetable, a, 1)) == 0)
-      return -1;
-    if (*pte & PTE_V) {
-      printf("fatal: %p %p\n", pagetable, va);
-      panic("remap");
-    }
+  for (;;) {
+    if ((pte = walk(pagetable, a, 1)) == 0) return -1;
+    if (*pte & PTE_V) panic("remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
     // map -> judge -> break
     // PGROUNDDOWN is feasible
-    if(a == last)
-      break;
+    if (a == last) break;
     a += PGSIZE;
     pa += PGSIZE;
   }
@@ -210,15 +217,17 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 
 int union_mappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
                   uint64 size, uint64 pa, int perm) {
+  if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || user_pg == lpg))
+    printf("m_upg: %p, va: %p, s: %d, p: %d\n", user_pg, va, size, perm);
   if (mappages(user_pg, va, size, pa, perm) != 0) return -1;
-  //! watch out bugs
   // avoid "remap" panic, deny mapping VA higher than PLIC (0x0C000000)
   if (va < PLIC) {
-    if (va + size - 1 >= PLIC) {
-      size = PLIC - va;
-      printf("not map");
-    };
-    if (mappages(kern_pg, va, size, pa, perm & (!PTE_U)) != 0) {
+    if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || kern_pg == lpg))
+      printf("m_kpg: %p, va: %p, s: %d, p: %d\n", kern_pg, va, size,
+             perm & ~PTE_U);
+    if (va + size - 1 >= PLIC) size = PLIC - va;
+    //! watch out bugs from permission settings
+    if (mappages(kern_pg, va, size, pa, perm & ~PTE_U) != 0) {
       uvmunmap(user_pg, va, size / PGSIZE, 0);
       return -1;
     }
@@ -228,8 +237,12 @@ int union_mappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
 
 void union_unmappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
                      uint64 npages, int do_free) {
+  if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || user_pg == lpg))
+    printf("u_upg: %p, va: %p, np: %d, f: %d\n", user_pg, va, npages, do_free);
   uvmunmap(user_pg, va, npages, do_free);
   if (va < PLIC) {
+    if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || kern_pg == lpg))
+      printf("u_kpg: %p, va: %p, np: %d, f: %d\n", kern_pg, va, npages, 0);
     if (va + npages * PGSIZE - 1 >= PLIC) npages = (PLIC - va) / PGSIZE;
     uvmunmap(kern_pg, va, npages, 0);
   };
@@ -238,20 +251,21 @@ void union_unmappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
 // Remove npages of mappings starting from va. va must be
 // page-aligned. The mappings must exist.
 // Optionally free the physical memory.
-void
-uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
-{
+void uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free) {
   uint64 a;
   pte_t *pte;
-
+  if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || pagetable == lpg))
+    printf("    %p, va: %p, np: %d, f: %d\n", pagetable, va, npages, do_free);
   if((va % PGSIZE) != 0)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
+    if ((*pte & PTE_V) == 0) {
+      printf("%p %p", pagetable, va);
       panic("uvmunmap: not mapped");
+    }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
