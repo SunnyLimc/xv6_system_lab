@@ -182,10 +182,10 @@ kvmpa(uint64 va)
   return pa+off;
 }
 
-int ldebug = 1;
+int ldebug = 0;
 int vaon = 0;
 uint64 lva = 0;
-int lpgon = 1;
+int lpgon = 0;
 pagetable_t lpg = (pagetable_t)0x83fe4000L;
 
 // Create PTEs for virtual addresses starting at va that refer to
@@ -219,13 +219,13 @@ int union_mappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
                   uint64 size, uint64 pa, int perm) {
   if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || user_pg == lpg))
     printf("m_upg: %p, va: %p, s: %d, p: %d\n", user_pg, va, size, perm);
-  if (mappages(user_pg, va, size, pa, perm) != 0) return -1;
   // avoid "remap" panic, deny mapping VA higher than PLIC (0x0C000000)
   if (va < PLIC) {
     if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || kern_pg == lpg))
       printf("m_kpg: %p, va: %p, s: %d, p: %d\n", kern_pg, va, size,
              perm & ~PTE_U);
     if (va + size - 1 >= PLIC) size = PLIC - va;
+    if (mappages(user_pg, va, size, pa, perm) != 0) return -1;
     //! watch out bugs from permission settings
     if (mappages(kern_pg, va, size, pa, perm & ~PTE_U) != 0) {
       uvmunmap(user_pg, va, size / PGSIZE, 0);
@@ -239,11 +239,11 @@ void union_unmappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
                      uint64 npages, int do_free) {
   if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || user_pg == lpg))
     printf("u_upg: %p, va: %p, np: %d, f: %d\n", user_pg, va, npages, do_free);
-  uvmunmap(user_pg, va, npages, do_free);
   if (va < PLIC) {
     if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || kern_pg == lpg))
       printf("u_kpg: %p, va: %p, np: %d, f: %d\n", kern_pg, va, npages, 0);
     if (va + npages * PGSIZE - 1 >= PLIC) npages = (PLIC - va) / PGSIZE;
+    uvmunmap(user_pg, va, npages, do_free);
     uvmunmap(kern_pg, va, npages, 0);
   };
 }
@@ -292,16 +292,16 @@ uvmcreate()
 // Load the user initcode into address 0 of pagetable,
 // for the very first process.
 // sz must be less than a page.
-void
-uvminit(pagetable_t pagetable, uchar *src, uint sz)
-{
+void uvminit(pagetable_t user_pg, pagetable_t kern_pg, uchar *src, uint sz) {
   char *mem;
 
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
   mem = kalloc();
   memset(mem, 0, PGSIZE);
-  mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
+  uint64 perm = PTE_W | PTE_R | PTE_X | PTE_U;
+  mappages(user_pg, 0, PGSIZE, (uint64)mem, perm);
+  mappages(kern_pg, 0, PGSIZE, (uint64)mem, perm & ~PTE_U);
   memmove(mem, src, sz);
 }
 
@@ -480,23 +480,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
-
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -506,40 +490,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
-
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
-
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
-
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 void _vmprint(pagetable_t ptepm, int level) {
