@@ -182,12 +182,6 @@ kvmpa(uint64 va)
   return pa+off;
 }
 
-int ldebug = 0;
-int vaon = 0;
-uint64 lva = 0;
-int lpgon = 0;
-pagetable_t lpg = (pagetable_t)0x83fe4000L;
-
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
 // be page-aligned. Returns 0 on success, -1 if walk() couldn't
@@ -198,8 +192,6 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   uint64 a, last;
   pte_t *pte;
 
-  if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || pagetable == lpg))
-    printf("    %p, va: %p, s: %d, p: %d\n", pagetable, va, size, perm);
   a = PGROUNDDOWN(va);
   last = PGROUNDDOWN(va + size - 1);
   for (;;) {
@@ -217,13 +209,8 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 
 int union_mappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
                   uint64 size, uint64 pa, int perm) {
-  if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || user_pg == lpg))
-    printf("m_upg: %p, va: %p, s: %d, p: %d\n", user_pg, va, size, perm);
   // avoid "remap" panic, deny mapping VA higher than PLIC (0x0C000000)
   if (va < PLIC) {
-    if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || kern_pg == lpg))
-      printf("m_kpg: %p, va: %p, s: %d, p: %d\n", kern_pg, va, size,
-             perm & ~PTE_U);
     if (va + size - 1 >= PLIC) size = PLIC - va;
     if (mappages(user_pg, va, size, pa, perm) != 0) return -1;
     //! watch out bugs from permission settings
@@ -237,11 +224,7 @@ int union_mappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
 
 void union_unmappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
                      uint64 npages, int do_free) {
-  if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || user_pg == lpg))
-    printf("u_upg: %p, va: %p, np: %d, f: %d\n", user_pg, va, npages, do_free);
   if (va < PLIC) {
-    if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || kern_pg == lpg))
-      printf("u_kpg: %p, va: %p, np: %d, f: %d\n", kern_pg, va, npages, 0);
     if (va + npages * PGSIZE - 1 >= PLIC) npages = (PLIC - va) / PGSIZE;
     uvmunmap(user_pg, va, npages, do_free);
     uvmunmap(kern_pg, va, npages, 0);
@@ -254,8 +237,6 @@ void union_unmappage(pagetable_t user_pg, pagetable_t kern_pg, uint64 va,
 void uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free) {
   uint64 a;
   pte_t *pte;
-  if (ldebug && (vaon == 0 || va == lva) && (lpgon == 0 || pagetable == lpg))
-    printf("    %p, va: %p, np: %d, f: %d\n", pagetable, va, npages, do_free);
   if((va % PGSIZE) != 0)
     panic("uvmunmap: not aligned");
 
